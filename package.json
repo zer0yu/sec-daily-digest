@@ -6,5 +6,8 @@
   "scripts": {
     "test": "bun test",
     "lint": "bun --version"
+  },
+  "dependencies": {
+    "yaml": "^2.8.2"
   }
 }
