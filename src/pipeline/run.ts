@@ -1,6 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fallbackScoreFromText, inferTopicSignals } from "../ai/scoring";
+import { createProvider } from "../ai/providers/factory";
+import type { AIProvider } from "../ai/providers/types";
 import { dedupeByUrl, filterByHours } from "../articles/normalize";
 import { loadConfig } from "../config/load";
 import { mergeVulnerabilityItems } from "../merge/vuln";
@@ -99,6 +101,95 @@ function summarizeZh(article: Article): { titleZh: string; summaryZh: string } {
   };
 }
 
+interface ProviderScoringPayload {
+  relevance: number;
+  quality: number;
+  timeliness: number;
+  security: number;
+  ai: number;
+  title_zh?: string;
+  summary_zh?: string;
+}
+
+function parseProviderPayload(text: string): ProviderScoringPayload | null {
+  let raw = text.trim();
+  if (raw.startsWith("```")) {
+    raw = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  }
+  try {
+    const parsed = JSON.parse(raw) as ProviderScoringPayload;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function clamp(value: number): number {
+  return Math.max(1, Math.min(10, Math.round(value)));
+}
+
+function buildScoringPrompt(article: Article): string {
+  return `你是网络空间安全研究员助手。请对下面文章打分，并返回 JSON。
+
+评分维度（1-10）：
+- relevance：总体阅读价值
+- quality：信息质量与深度
+- timeliness：时效性
+- security：安全相关性
+- ai：AI 相关性
+
+并补充：
+- title_zh：中文标题
+- summary_zh：中文摘要（2-3句）
+
+文章标题：${article.title}
+链接：${article.link}
+来源：${article.sourceName}
+正文摘要：${article.description}
+
+仅返回 JSON，不要 markdown：
+{
+  "relevance": 8,
+  "quality": 7,
+  "timeliness": 9,
+  "security": 8,
+  "ai": 7,
+  "title_zh": "中文标题",
+  "summary_zh": "中文摘要"
+}`;
+}
+
+async function enrichWithProvider(article: Article, provider: AIProvider): Promise<EnrichedArticle | null> {
+  const response = await provider.call(buildScoringPrompt(article));
+  const parsed = parseProviderPayload(response);
+  if (!parsed) {
+    return null;
+  }
+
+  const localized = summarizeZh(article);
+  const titleZh = parsed.title_zh?.trim() || localized.titleZh;
+  const summaryZh = parsed.summary_zh?.trim() || localized.summaryZh;
+  const signals = {
+    security: clamp(parsed.security),
+    ai: clamp(parsed.ai),
+  };
+  const score = Number(
+    (
+      0.35 * (0.5 * signals.security + 0.5 * signals.ai) +
+      0.35 * (0.5 * clamp(parsed.relevance) + 0.5 * clamp(parsed.quality)) +
+      0.3 * clamp(parsed.timeliness)
+    ).toFixed(2),
+  );
+
+  return {
+    ...article,
+    titleZh,
+    summaryZh,
+    signals,
+    score,
+  };
+}
+
 async function loadArticles(options: Required<Pick<RunPipelineOptions, "env">> & {
   profile: "tiny" | "full";
   fetcher: typeof fetch;
@@ -155,19 +246,40 @@ export async function runPipeline(options: RunPipelineOptions = {}): Promise<Run
   }));
   const recent = filterByHours(deduped, config.time_range_hours, now);
 
-  const scored: EnrichedArticle[] = recent.map((article) => {
+  let provider: AIProvider | null = null;
+  if (!options.dryRun) {
+    try {
+      provider = createProvider(config.provider, env, options.fetcher ?? fetch);
+    } catch (error) {
+      console.warn(`[pipeline] provider init failed, using rule fallback: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  const scored: EnrichedArticle[] = [];
+  for (const article of recent) {
+    if (provider) {
+      try {
+        const enriched = await enrichWithProvider(article, provider);
+        if (enriched) {
+          scored.push(enriched);
+          continue;
+        }
+      } catch (error) {
+        console.warn(`[pipeline] provider scoring failed for ${article.link}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
     const signals = inferTopicSignals(article.title, article.description);
     const fallback = fallbackScoreFromText(article);
     const localized = summarizeZh(article);
-
-    return {
+    scored.push({
       ...article,
       titleZh: localized.titleZh,
       summaryZh: localized.summaryZh,
       signals,
       score: fallback.composite,
-    };
-  });
+    });
+  }
 
   scored.sort((a, b) => b.score - a.score);
   const balanced = pickBalanced(scored, config.top_n);
