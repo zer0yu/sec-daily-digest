@@ -1,2 +1,4 @@
 .worktrees/
 node_modules/
+docs/plans
+.DS_Store

@@ -1,42 +1,47 @@
 # sec-daily-digest
 
-`sec-daily-digest` 从 CyberSecurityRSS 抓取最新文章，按安全与 AI 的均衡策略筛选，自动聚合漏洞事件并生成每日精选 Markdown 日报。
+English is the primary README. Chinese version: [README.zh-CN.md](README.zh-CN.md).
 
-## 特性
+`sec-daily-digest` fetches recent articles from CyberSecurityRSS OPML feeds, scores and filters them (AI-first with rule fallback), merges vulnerability events, and generates a bilingual daily markdown digest for cybersecurity researchers.
 
-- TypeScript + Bun 运行时
-- 每次运行前检查 `tiny.opml` 更新（可切换完整 OPML）
-- 默认使用 OpenAI API 格式，同时支持 Gemini / Claude / Ollama
-- 漏洞合并策略：
-  - 优先按 `CVE-ID` 合并
-  - 无 `CVE-ID` 的重大漏洞按语义聚类合并
-  - 合并事件罗列全部参考链接
-- 输出为中英混合阅读格式（中文标题与摘要 + 英文原题链接）
+## Highlights
 
-## 配置目录（YAML）
+- TypeScript + Bun runtime
+- Mandatory OPML update check before each run
+  - Default profile: `tiny.opml`
+  - Optional profile: `CyberSecurityRSS.opml` (`--opml full`)
+  - On remote check failure: continue with cached OPML
+- Explicit provider selection:
+  - `--provider openai|gemini|claude|ollama`
+  - Default: `openai`
+- Balanced ranking focus:
+  - Security 50% + AI 50%
+- Vulnerability merge policy:
+  - CVE-first merge by exact `CVE-YYYY-NNNN...`
+  - Semantic clustering fallback for major non-CVE incidents
+  - Consolidated reference links in merged events
+- Output format:
+  - Chinese title + Chinese summary
+  - Original English title/link retained
 
-固定目录：
+## Config and State (YAML)
+
+Persistent directory:
 
 - `~/.sec-daily-digest/`
 
-关键文件：
+Key files:
 
 - `~/.sec-daily-digest/config.yaml`
 - `~/.sec-daily-digest/opml/tiny.opml`
 - `~/.sec-daily-digest/opml/CyberSecurityRSS.opml`
 
-## 快速开始
-
-1) 安装依赖
+## Quick Start (CLI)
 
 ```bash
-bun install
-```
-
-2) 运行
-
-```bash
-bun scripts/sec-digest.ts \
+cd /Users/z3r0yu/z3dev/Skills/sec-daily-digest
+~/.bun/bin/bun install
+~/.bun/bin/bun scripts/sec-digest.ts \
   --provider openai \
   --opml tiny \
   --hours 48 \
@@ -44,49 +49,118 @@ bun scripts/sec-digest.ts \
   --output ./output/sec-digest-$(date +%Y%m%d).md
 ```
 
-## 参数
+## CLI Options
 
-- `--provider <openai|gemini|claude|ollama>`：显式选择 provider，默认 `openai`
-- `--opml <tiny|full>`：默认 `tiny`
-- `--hours <n>`：时间窗（小时），默认 `48`
-- `--top-n <n>`：精选数量，默认 `20`
-- `--output <path>`：输出路径
-- `--dry-run`：仅规则评分，不调用外部 AI
+- `--provider <openai|gemini|claude|ollama>`
+- `--opml <tiny|full>`
+- `--hours <n>`
+- `--top-n <n>`
+- `--output <path>`
+- `--dry-run` (rule-only mode, no external AI call)
 
-## 环境变量
+## Environment Variables
 
-OpenAI（默认）：
+OpenAI (default):
 
 - `OPENAI_API_KEY`
-- `OPENAI_API_BASE`（可选）
-- `OPENAI_MODEL`（可选）
+- `OPENAI_API_BASE` (optional)
+- `OPENAI_MODEL` (optional)
 
-Gemini：
+Gemini:
 
 - `GEMINI_API_KEY`
-- `GEMINI_MODEL`（可选）
+- `GEMINI_MODEL` (optional)
 
-Claude：
+Claude:
 
 - `ANTHROPIC_API_KEY`
-- `CLAUDE_MODEL`（可选）
-- `CLAUDE_API_BASE`（可选）
+- `CLAUDE_MODEL` (optional)
+- `CLAUDE_API_BASE` (optional)
 
-Ollama：
+Ollama:
 
-- `OLLAMA_API_BASE`（可选，默认 `http://127.0.0.1:11434`）
-- `OLLAMA_MODEL`（可选）
+- `OLLAMA_API_BASE` (optional, default `http://127.0.0.1:11434`)
+- `OLLAMA_MODEL` (optional)
 
-## 测试
+## Install This Skill
+
+Set source path:
 
 ```bash
-bun test
+SKILL_SRC="~/z3dev/Skills/sec-daily-digest"
 ```
 
-## Skill Command
+### OpenClaw
 
-作为 skill 使用时，触发命令为：
+OpenClaw supports local skills in `~/.openclaw/skills` and workspace `./skills`.
+
+User-level install:
+
+```bash
+mkdir -p ~/.openclaw/skills
+ln -sfn "$SKILL_SRC" ~/.openclaw/skills/sec-daily-digest
+```
+
+Workspace-level install:
+
+```bash
+mkdir -p ./skills
+ln -sfn "$SKILL_SRC" ./skills/sec-daily-digest
+```
+
+### Claude Code
+
+Install as a personal skill:
+
+```bash
+mkdir -p ~/.claude/skills
+ln -sfn "$SKILL_SRC" ~/.claude/skills/sec-daily-digest
+```
+
+Or project-local:
+
+```bash
+mkdir -p ./.claude/skills
+ln -sfn "$SKILL_SRC" ./.claude/skills/sec-daily-digest
+```
+
+### Codex
+
+Codex loads skills from `~/.agents/skills`.
+
+```bash
+mkdir -p ~/.agents/skills
+ln -sfn "$SKILL_SRC" ~/.agents/skills/sec-daily-digest
+```
+
+### OpenCode
+
+OpenCode loads personal skills from `~/.config/opencode/skills` and project skills from `./.opencode/skills`.
+
+User-level install:
+
+```bash
+mkdir -p ~/.config/opencode/skills
+ln -sfn "$SKILL_SRC" ~/.config/opencode/skills/sec-daily-digest
+```
+
+Project-level install:
+
+```bash
+mkdir -p ./.opencode/skills
+ln -sfn "$SKILL_SRC" ./.opencode/skills/sec-daily-digest
+```
+
+## Run as a Skill
+
+Trigger command:
 
 ```text
 /sec-digest
+```
+
+## Tests
+
+```bash
+~/.bun/bin/bun test
 ```
