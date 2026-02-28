@@ -88,7 +88,7 @@ export function buildSummaryPrompt(articles: SummaryPromptArticle[], lang: "zh" 
       ? "请使用中文输出 title_zh、summary_zh、reason_zh。"
       : "Use English output for title_zh, summary_zh, and reason_zh.";
 
-  return `你是技术情报编辑，请为每篇文章输出翻译与结构化摘要。
+  return `你是网络空间安全领域的技术情报编辑，请为每篇文章输出翻译与结构化摘要。
 
 输出字段：
 - title_zh: 中文标题（若原标题已是中文，可保持）
