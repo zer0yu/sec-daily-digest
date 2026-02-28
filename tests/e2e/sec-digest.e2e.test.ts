@@ -35,6 +35,7 @@ describe("sec-digest e2e", () => {
     const markdown = await readFile(outputPath, "utf8");
     expect(result.counters.articles).toBe(2);
     expect(result.counters.selected).toBeGreaterThan(0);
+    expect(markdown).toContain("今日趋势");
     expect(markdown).toContain("漏洞专报");
     expect(markdown).toContain("CVE-2026-77777");
     expect(markdown).toContain("fixture.local/post-1");

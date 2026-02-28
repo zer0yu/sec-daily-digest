@@ -4,6 +4,10 @@ English is the primary README. Chinese version: [README.zh-CN.md](README.zh-CN.m
 
 `sec-daily-digest` fetches recent articles from CyberSecurityRSS OPML feeds, scores and filters them (AI-first with rule fallback), merges vulnerability events, and generates a bilingual daily markdown digest for cybersecurity researchers.
 
+## Five-Step Pipeline
+
+`RSS fetch -> time filter -> AI scoring+classification -> AI summary+translation -> trend highlights`
+
 ## Highlights
 
 - TypeScript + Bun runtime
@@ -16,12 +20,17 @@ English is the primary README. Chinese version: [README.zh-CN.md](README.zh-CN.m
   - Default: `openai`
 - Balanced ranking focus:
   - Security 50% + AI 50%
+- AI output stages are decoupled:
+  - Step 3 scoring returns structured fields (scores + category + keywords)
+  - Step 4 summary returns translation + 4-6 sentence summary + recommendation reason
+  - Step 5 highlights returns macro trend brief (3-5 sentences)
 - Vulnerability merge policy:
   - CVE-first merge by exact `CVE-YYYY-NNNN...`
   - Semantic clustering fallback for major non-CVE incidents
   - Consolidated reference links in merged events
 - Output format:
-  - Chinese title + Chinese summary
+  - `## 📝` Today's trend highlights
+  - Chinese title + Chinese summary + recommendation reason
   - Original English title/link retained
 
 ## Config and State (YAML)

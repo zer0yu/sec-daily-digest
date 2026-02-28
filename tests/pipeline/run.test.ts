@@ -42,6 +42,7 @@ describe("runPipeline", () => {
     const report = await readFile(outputPath, "utf8");
     expect(report).toContain("## AI发展");
     expect(report).toContain("## 安全动态");
+    expect(report).toContain("## 📝 今日趋势");
     expect(report).toContain("## 漏洞专报");
 
     await rm(tempRoot, { recursive: true, force: true });

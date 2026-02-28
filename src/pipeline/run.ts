@@ -1,6 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fallbackScoreFromText, inferTopicSignals } from "../ai/scoring";
 import { createProvider } from "../ai/providers/factory";
 import type { AIProvider } from "../ai/providers/types";
 import { dedupeByUrl, filterByHours } from "../articles/normalize";
@@ -11,6 +10,10 @@ import { syncOpml } from "../opml/sync";
 import { renderDigest } from "../report/markdown";
 import { fetchAllFeeds, type FeedSource } from "../rss/fetch";
 import type { Article } from "../rss/parse";
+import { generateTrendHighlights } from "./stages/highlights";
+import { scoreAndClassifyArticles } from "./stages/scoring";
+import { summarizeSelectedArticles } from "./stages/summary";
+import type { FinalArticle, ScoredArticle } from "./types";
 
 export interface RunPipelineOptions {
   provider?: "openai" | "gemini" | "claude" | "ollama";
@@ -38,26 +41,16 @@ export interface RunPipelineResult {
   provider: string;
 }
 
-interface EnrichedArticle extends Article {
-  summaryZh: string;
-  titleZh: string;
-  signals: {
-    security: number;
-    ai: number;
-  };
-  score: number;
-}
-
 function toDateString(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-function splitByFocus(items: EnrichedArticle[]): { ai: EnrichedArticle[]; security: EnrichedArticle[] } {
-  const ai: EnrichedArticle[] = [];
-  const security: EnrichedArticle[] = [];
+function splitByFocus<T extends { security: number; ai: number; score: number }>(items: T[]): { ai: T[]; security: T[] } {
+  const ai: T[] = [];
+  const security: T[] = [];
 
   for (const item of items) {
-    if (item.signals.security >= item.signals.ai) {
+    if (item.security >= item.ai) {
       security.push(item);
     } else {
       ai.push(item);
@@ -69,13 +62,33 @@ function splitByFocus(items: EnrichedArticle[]): { ai: EnrichedArticle[]; securi
   return { ai, security };
 }
 
-function pickBalanced(items: EnrichedArticle[], topN: number): { ai: EnrichedArticle[]; security: EnrichedArticle[]; selected: EnrichedArticle[] } {
+function normalizeWeights(weights: { security: number; ai: number }): { security: number; ai: number } {
+  const security = Math.max(0, weights.security);
+  const ai = Math.max(0, weights.ai);
+  const total = security + ai;
+  if (total <= 0) {
+    return { security: 0.5, ai: 0.5 };
+  }
+  return {
+    security: security / total,
+    ai: ai / total,
+  };
+}
+
+function pickBalanced<T extends { security: number; ai: number; score: number }>(
+  items: T[],
+  topN: number,
+  weights: { security: number; ai: number },
+): { ai: T[]; security: T[]; selected: T[] } {
   const { ai, security } = splitByFocus(items);
-  const aiQuota = Math.ceil(topN / 2);
-  const secQuota = Math.floor(topN / 2);
+  const normalized = normalizeWeights(weights);
+
+  const secQuota = Math.max(0, Math.min(topN, Math.floor(topN * normalized.security)));
+  const aiQuota = Math.max(0, Math.min(topN, Math.floor(topN * normalized.ai)));
+
   const pickedAi = ai.slice(0, aiQuota);
   const pickedSec = security.slice(0, secQuota);
-  const selected = [...pickedAi, ...pickedSec];
+  const selected: T[] = [...pickedAi, ...pickedSec];
 
   if (selected.length < topN) {
     const extras = items
@@ -90,103 +103,6 @@ function pickBalanced(items: EnrichedArticle[], topN: number): { ai: EnrichedArt
     ai: rebucket.ai,
     security: rebucket.security,
     selected,
-  };
-}
-
-function summarizeZh(article: Article): { titleZh: string; summaryZh: string } {
-  const summary = article.description || article.title;
-  return {
-    titleZh: article.title,
-    summaryZh: summary.length > 220 ? `${summary.slice(0, 220)}...` : summary,
-  };
-}
-
-interface ProviderScoringPayload {
-  relevance: number;
-  quality: number;
-  timeliness: number;
-  security: number;
-  ai: number;
-  title_zh?: string;
-  summary_zh?: string;
-}
-
-function parseProviderPayload(text: string): ProviderScoringPayload | null {
-  let raw = text.trim();
-  if (raw.startsWith("```")) {
-    raw = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  }
-  try {
-    const parsed = JSON.parse(raw) as ProviderScoringPayload;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function clamp(value: number): number {
-  return Math.max(1, Math.min(10, Math.round(value)));
-}
-
-function buildScoringPrompt(article: Article): string {
-  return `你是网络空间安全研究员助手。请对下面文章打分，并返回 JSON。
-
-评分维度（1-10）：
-- relevance：总体阅读价值
-- quality：信息质量与深度
-- timeliness：时效性
-- security：安全相关性
-- ai：AI 相关性
-
-并补充：
-- title_zh：中文标题
-- summary_zh：中文摘要（2-3句）
-
-文章标题：${article.title}
-链接：${article.link}
-来源：${article.sourceName}
-正文摘要：${article.description}
-
-仅返回 JSON，不要 markdown：
-{
-  "relevance": 8,
-  "quality": 7,
-  "timeliness": 9,
-  "security": 8,
-  "ai": 7,
-  "title_zh": "中文标题",
-  "summary_zh": "中文摘要"
-}`;
-}
-
-async function enrichWithProvider(article: Article, provider: AIProvider): Promise<EnrichedArticle | null> {
-  const response = await provider.call(buildScoringPrompt(article));
-  const parsed = parseProviderPayload(response);
-  if (!parsed) {
-    return null;
-  }
-
-  const localized = summarizeZh(article);
-  const titleZh = parsed.title_zh?.trim() || localized.titleZh;
-  const summaryZh = parsed.summary_zh?.trim() || localized.summaryZh;
-  const signals = {
-    security: clamp(parsed.security),
-    ai: clamp(parsed.ai),
-  };
-  const score = Number(
-    (
-      0.35 * (0.5 * signals.security + 0.5 * signals.ai) +
-      0.35 * (0.5 * clamp(parsed.relevance) + 0.5 * clamp(parsed.quality)) +
-      0.3 * clamp(parsed.timeliness)
-    ).toFixed(2),
-  );
-
-  return {
-    ...article,
-    titleZh,
-    summaryZh,
-    signals,
-    score,
   };
 }
 
@@ -233,6 +149,7 @@ export async function runPipeline(options: RunPipelineOptions = {}): Promise<Run
     env,
   );
 
+  // Step 1: RSS fetch
   const articlesResult = await loadArticles({
     env,
     profile: config.opml_profile === "full" ? "full" : "tiny",
@@ -240,6 +157,7 @@ export async function runPipeline(options: RunPipelineOptions = {}): Promise<Run
     seedArticles: options.seedArticles,
   });
 
+  // Step 2: time filter
   const deduped = dedupeByUrl(articlesResult.articles).map((item) => ({
     ...item,
     link: item.link,
@@ -255,38 +173,35 @@ export async function runPipeline(options: RunPipelineOptions = {}): Promise<Run
     }
   }
 
-  const scored: EnrichedArticle[] = [];
-  for (const article of recent) {
-    if (provider) {
-      try {
-        const enriched = await enrichWithProvider(article, provider);
-        if (enriched) {
-          scored.push(enriched);
-          continue;
-        }
-      } catch (error) {
-        console.warn(`[pipeline] provider scoring failed for ${article.link}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-
-    const signals = inferTopicSignals(article.title, article.description);
-    const fallback = fallbackScoreFromText(article);
-    const localized = summarizeZh(article);
-    scored.push({
-      ...article,
-      titleZh: localized.titleZh,
-      summaryZh: localized.summaryZh,
-      signals,
-      score: fallback.composite,
-    });
-  }
+  // Step 3: AI scoring + classification
+  const scored = await scoreAndClassifyArticles({
+    articles: recent,
+    provider,
+    weights: config.weights,
+  });
 
   scored.sort((a, b) => b.score - a.score);
-  const balanced = pickBalanced(scored, config.top_n);
+  const balancedScored = pickBalanced<ScoredArticle>(scored, config.top_n, config.weights);
+
+  // Step 4: AI summary + translation
+  const summarizedSelected = await summarizeSelectedArticles({
+    articles: balancedScored.selected,
+    provider,
+    lang: "zh",
+  });
+
+  const balancedFinal = splitByFocus<FinalArticle>(summarizedSelected);
+
+  // Step 5: trend highlights
+  const highlights = await generateTrendHighlights({
+    articles: summarizedSelected,
+    provider,
+    lang: "zh",
+  });
 
   const vulnerabilities = mergeVulnerabilityItems(
-    balanced.security
-      .filter((item) => item.signals.security >= 6 || /CVE-\d{4}-\d{4,7}/i.test(`${item.title} ${item.description}`))
+    balancedFinal.security
+      .filter((item) => item.security >= 6 || /CVE-\d{4}-\d{4,7}/i.test(`${item.title} ${item.description}`))
       .map((item) => ({
         title: item.title,
         summary: item.summaryZh || item.description,
@@ -297,18 +212,27 @@ export async function runPipeline(options: RunPipelineOptions = {}): Promise<Run
 
   const report = renderDigest({
     date: toDateString(now),
-    ai: balanced.ai.map((item) => ({
+    highlights,
+    ai: balancedFinal.ai.map((item) => ({
       titleZh: item.titleZh,
       title: item.title,
       link: item.link,
       summaryZh: item.summaryZh,
+      reasonZh: item.reasonZh,
+      category: item.category,
+      keywords: item.keywords,
+      score: item.score,
       sourceName: item.sourceName,
     })),
-    security: balanced.security.map((item) => ({
+    security: balancedFinal.security.map((item) => ({
       titleZh: item.titleZh,
       title: item.title,
       link: item.link,
       summaryZh: item.summaryZh,
+      reasonZh: item.reasonZh,
+      category: item.category,
+      keywords: item.keywords,
+      score: item.score,
       sourceName: item.sourceName,
     })),
     vulnerabilities,
@@ -324,7 +248,7 @@ export async function runPipeline(options: RunPipelineOptions = {}): Promise<Run
       feeds: articlesResult.feedsCount,
       articles: articlesResult.articles.length,
       recent: recent.length,
-      selected: balanced.selected.length,
+      selected: summarizedSelected.length,
       vulnerabilities: vulnerabilities.length,
     },
     usedCache: articlesResult.usedCache,
